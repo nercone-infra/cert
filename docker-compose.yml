@@ -1,0 +1,99 @@
+services:
+  ruconet:
+    container_name: cert-ruconet
+    image: ghcr.io/nercone-infra/ruconet-node:latest
+    restart: unless-stopped
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: 1
+    dns:
+      - 127.0.0.1
+    dns_opt:
+      - trust-ad
+    environment:
+      - RUCONET_NAME=cert
+      - RUCONET_PRIVATE_KEY=${RUCONET_PRIVATE_KEY:?RUCONET_PRIVATE_KEY is required}
+      - RUCONET_PRESHARED_KEY=${RUCONET_PRESHARED_KEY:?RUCONET_PRESHARED_KEY is required}
+      - RUCONET_HUB_PUBLIC_KEY=${RUCONET_HUB_PUBLIC_KEY:?RUCONET_HUB_PUBLIC_KEY is required}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ruconet-node", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  tls:
+    container_name: cert-tls
+    image: ghcr.io/nercone-infra/ruconet-tls:latest
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    network_mode: service:ruconet
+    volumes:
+      - ./tls:/etc/nginx.d:ro
+      - ./data/certs:/etc/certs:ro
+    depends_on:
+      ruconet:
+        condition: service_started
+        restart: true
+
+  ca:
+    container_name: cert-ca
+    build:
+      context: .
+      target: ca
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    network_mode: service:ruconet
+    volumes:
+      - ./data/ca:/var/lib/ca
+      - ./data/certs:/etc/certs
+      - ./data/letsencrypt:/etc/letsencrypt:ro
+    environment:
+      - RUCONET_NAME=cert
+      - RUCONET_DOMAIN=ruconet.internal
+      - RUCONET_PREFIX=10.64.0.0/24
+      - LETSENCRYPT_NAME=nercone.dev
+      - LETSENCRYPT_MEMBERS=gateway mail
+    depends_on:
+      ruconet:
+        condition: service_started
+        restart: true
+
+  letsencrypt:
+    container_name: cert-letsencrypt
+    image: certbot/dns-cloudflare:latest
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    network_mode: service:ruconet
+    entrypoint: ["/bin/sh", "/usr/local/lib/letsencrypt/entrypoint.sh"]
+    volumes:
+      - ./letsencrypt:/usr/local/lib/letsencrypt:ro
+      - ./data/letsencrypt:/etc/letsencrypt
+    environment:
+      - LETSENCRYPT_NAME=nercone.dev
+      - LETSENCRYPT_DOMAINS=nerc1.dev nercone.dev d-g-c.net diamondgotcat.net *.nerc1.dev *.nercone.dev *.d-g-c.net *.diamondgotcat.net
+      - LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL:-}
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}
+    depends_on:
+      ruconet:
+        condition: service_started
+        restart: true
